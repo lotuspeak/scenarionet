@@ -5,6 +5,8 @@ import pickle
 
 import tqdm
 
+import matplotlib.pyplot as plt
+
 from scenarionet.converter.utils import mph_to_kmh
 from scenarionet.converter.waymo.type import WaymoLaneType, WaymoAgentType, WaymoRoadLineType, WaymoRoadEdgeType
 
@@ -38,6 +40,15 @@ def extract_poly(message):
     coord = np.stack((x, y, z), axis=1).astype("float32")
     return coord
 
+def extract_polygon(message):
+    x = [i.x for i in message]
+    y = [i.y for i in message]
+    z = [i.z for i in message]
+    x.append(x[0])
+    y.append(y[0])
+    z.append(z[0])
+    coord = np.stack((x, y, z), axis=1).astype("float32")
+    return coord
 
 def extract_boundaries(fb):
     b = []
@@ -92,9 +103,9 @@ def extract_center(f):
 
     center["right_boundaries"] = extract_boundaries(f.right_boundaries)
 
-    center["left_neighbor"] = extract_neighbors(f.left_neighbors)
+    center["left_neighbors"] = extract_neighbors(f.left_neighbors)
 
-    center["right_neighbor"] = extract_neighbors(f.right_neighbors)
+    center["right_neighbors"] = extract_neighbors(f.right_neighbors)
 
     return center
 
@@ -131,7 +142,7 @@ def extract_crosswalk(f):
     cross_walk = dict()
     f = f.crosswalk
     cross_walk["type"] = MetaDriveType.CROSSWALK
-    cross_walk["polygon"] = extract_poly(f.polygon)
+    cross_walk["polygon"] = extract_polygon(f.polygon)
     return cross_walk
 
 
@@ -139,7 +150,7 @@ def extract_bump(f):
     speed_bump_data = dict()
     f = f.speed_bump
     speed_bump_data["type"] = MetaDriveType.SPEED_BUMP
-    speed_bump_data["polygon"] = extract_poly(f.polygon)
+    speed_bump_data["polygon"] = extract_polygon(f.polygon)
     return speed_bump_data
 
 
@@ -469,6 +480,125 @@ def get_waymo_scenarios(waymo_data_directory, start_index, num, num_workers=8):
     return all_result
 
 
+def get_xy_range(scenario: scenario_pb2.Scenario):
+    x_min = float('inf')
+    x_max = float('-inf')
+    y_min = float('inf')
+    y_max = float('-inf')
+    
+    """ 
+    { 
+        lane : { id1: {} },
+        road_line: {},
+        road_edge: {}, 
+    }
+    """
+    
+    map_features = {"lane":{}, "road_line":{}, 'road_edge':{}, 
+                    'crosswalk': {}, 'speed_bump':{}}
+    
+    def get_max_min(polyline, x_mn, x_mx, y_mn, y_mx):
+        for p in polyline:
+            x_mn = min(x_mn, p[0])
+            x_mx = max(x_mx, p[0])
+            y_mn = min(y_mn, p[1])
+            y_mx = max(y_mx, p[1])
+        return x_mn, x_mx, y_mn, y_mx
+    
+    for map_feature in scenario.map_features:
+        id = str(map_feature.id)
+
+        if map_feature.HasField("lane"):
+            map_features['lane'][id] = extract_center(map_feature)
+            x_min, x_max, y_min, y_max = get_max_min(map_features['lane'][id]['polyline'], x_min, x_max, y_min, y_max)           
+
+        if map_feature.HasField("road_line"):
+            map_features['road_line'][id] = extract_line(map_feature)
+            x_min, x_max, y_min, y_max = get_max_min(map_features['road_line'][id]['polyline'], x_min, x_max, y_min, y_max)
+
+        if map_feature.HasField("road_edge"):
+            map_features['road_edge'][id] = extract_edge(map_feature)
+            x_min, x_max, y_min, y_max = get_max_min(map_features['road_edge'][id]['polyline'], x_min, x_max, y_min, y_max)
+            
+        # if lane_state.HasField("stop_sign"):
+        #     ret[lane_id] = extract_stop(lane_state)
+
+        if map_feature.HasField("crosswalk"):
+            map_features['crosswalk'][id] = extract_crosswalk(map_feature)
+
+        if map_feature.HasField("speed_bump"):
+            map_features['speed_bump'][id] = extract_bump(map_feature)
+
+        # # Supported only in Waymo dataset 1.2.0
+        # if lane_state.HasField("driveway"):
+        #     ret[lane_id] = extract_driveway(lane_state)
+
+    return (x_min, x_max, y_min, y_max, map_features)
+
+def plot_scenario(scenario, map_features, xy_limits):
+    pth = '/home/nihua/data/waymo/visual/'
+    pic_path = os.path.join(pth, f"{scenario.scenario_id}.png")
+    
+    plt.figure(figsize=(100,90))
+
+    plt.xlim(xy_limits[0], xy_limits[1])
+    plt.ylim(xy_limits[2], xy_limits[3])
+    plt.axis("equal")
+    plt.autoscale(enable = False)
+    
+    # draw anchors，to keep the picture coordinates consistent between frames
+    plt.plot(xy_limits[0],xy_limits[2], marker='+')
+    plt.plot(xy_limits[1],xy_limits[3], marker='+')
+    
+    len_filter = 3
+    
+    # lane
+    for id, lane in map_features['lane'].items():
+        # linestyle='dotted'
+        plt.plot(lane['polyline'][:,0], lane['polyline'][:,1], color = 'black')
+        polyline_len = lane['polyline'].shape[0]
+        if polyline_len > len_filter:
+            plt.plot(lane['polyline'][int(len_filter/2),0], lane['polyline'][int(len_filter/2),1], color = 'red', marker='$s$')
+            plt.plot(lane['polyline'][-int(len_filter/2),0], lane['polyline'][-int(len_filter/2),1], color = 'red', marker='$e$')
+            
+            plt.text(lane['polyline'][int(polyline_len/2),0], lane['polyline'][int(polyline_len/2),1], f"{id}", color = 'red')
+        
+    # road_edge
+    for id, road_edge in map_features['road_edge'].items():
+        plt.plot(road_edge['polyline'][:,0], road_edge['polyline'][:,1], color = 'gray')
+        polyline = road_edge['polyline']
+        polyline_len = polyline.shape[0]
+        if polyline_len > len_filter:
+            plt.plot(polyline[int(len_filter/2),0], polyline[int(len_filter/2),1], color = 'lime', marker='$s$')
+            plt.plot(polyline[-int(len_filter/2),0], polyline[-int(len_filter/2),1], color = 'lime', marker='$e$')
+            
+            plt.text(polyline[int(polyline_len/2),0], polyline[int(polyline_len/2),1], f"{id}", color = 'lime')
+        
+    # road_line
+    for id, road_line in map_features['road_line'].items():
+        plt.plot(road_line['polyline'][:,0], road_line['polyline'][:,1], color = 'gray', linestyle='dashed')
+        polyline_len = road_line['polyline'].shape[0]
+        if polyline_len > len_filter:
+            plt.plot(road_line['polyline'][int(len_filter/2) ,0], road_line['polyline'][int(len_filter/2),1], color = 'blue', marker='$s$')
+            plt.plot(road_line['polyline'][-int(len_filter/2),0], road_line['polyline'][-int(len_filter/2),1], color = 'blue', marker='$e$')
+            
+            plt.text(road_line['polyline'][int(polyline_len/2),0], road_line['polyline'][int(polyline_len/2),1], f"{id}", color = 'blue')
+        
+    # crosswalk
+    for id, crosswalk in map_features['crosswalk'].items():
+        plt.plot(crosswalk['polygon'][:,0], crosswalk['polygon'][:,1], color = 'peru')
+        
+    # speed_bump
+    for id, speed_bump in map_features['speed_bump'].items():
+        plt.plot(speed_bump['polygon'][:,0], speed_bump['polygon'][:,1], color = 'red')
+    
+    plt.grid()
+    # plt.title()
+    plt.savefig(pic_path)
+    plt.close()
+    
+
+
 def read_from_files(arg):
     try:
         scenario_pb2
@@ -487,9 +617,41 @@ def read_from_files(arg):
         if ("tfrecord" not in file_path) or (not os.path.isfile(file_path)):
             continue
         for data in tf.data.TFRecordDataset(file_path, compression_type="").as_numpy_iterator():
+
             scenario = scenario_pb2.Scenario()
             scenario.ParseFromString(data)
-            # print(scenario)
+            print(scenario.scenario_id)
+            # if scenario.scenario_id != 'f1f6068fabe77dc8':
+                # continue
+            x_min, x_max, y_min, y_max, map_features = get_xy_range(scenario)
+            # print(x_min, x_max, y_min, y_max)
+            
+            plot_scenario(scenario, map_features, (x_min, x_max, y_min, y_max))
+            
+            
+            # for target_id in map_features['lane'].keys():
+            #     target_lane = map_features['lane'][target_id]
+            #     if 'right_neighbors' in target_lane:
+            #         print(scenario.scenario_id + " lane " + target_id + ' right_neighbors', target_lane['right_neighbors'])
+            #     if 'left_neighbors' in target_lane:
+            #         print(scenario.scenario_id + " lane " + target_id + ' left_neighbors', target_lane['left_neighbors']) 
+            #     if 'right_boundaries' in target_lane:
+            #         print(scenario.scenario_id + " lane " +  target_id + ' right_boundaries', target_lane['right_boundaries'])  
+            #     if 'left_boundaries' in target_lane:
+            #         print(scenario.scenario_id + " lane " +  target_id + ' left_boundaries', target_lane['left_boundaries'])
+                    
+            # target_id = '292'
+            # target_lane = map_features['lane'][target_id]
+            # if 'right_neighbors' in target_lane:
+            #     print(target_id + ' right_neighbors', target_lane['right_neighbors'])
+            # if 'left_neighbors' in target_lane:
+            #     print(target_id + ' left_neighbors', target_lane['left_neighbors'])    
+            
+            # if 'right_boundaries' in target_lane:
+                # print(target_id + ' right_boundaries', target_lane['right_boundaries'])  
+            # if 'left_boundaries' in target_lane:
+                # print(target_id + ' left_boundaries', target_lane['left_boundaries'])    
+            # break
             # if not writed and i==1:
             #     f.write(str(scenario))
             #     writed = True
@@ -520,6 +682,8 @@ def read_from_files_examples(arg):
         if ("tfrecord" not in file_path) or (not os.path.isfile(file_path)):
             continue
         for data in tf.data.TFRecordDataset(file_path, compression_type="").as_numpy_iterator():
+            # s = scenario_pb2.Scenario()
+            # s.ParseFromString(data)
             e = example_pb2.Example()
             e.ParseFromString(data)
             print(e)
@@ -537,6 +701,6 @@ def read_from_files_examples(arg):
 
 if __name__ == '__main__':
     
-    # read_from_files(('/home/nihua/data/waymo/exp/', ['uncompressed_scenario_training_20s_training_20s.tfrecord-00000-of-01000']))
-    read_from_files_examples(('/home/nihua/data/waymo/waymo_open_dataset_motion_v_1_2_0/uncompressed/tf_example/training', ['uncompressed_tf_example_training_training_tfexample.tfrecord-00000-of-01000']))
+    read_from_files(('/home/nihua/data/waymo/exp/', ['uncompressed_scenario_training_20s_training_20s.tfrecord-00000-of-01000']))
+    # read_from_files_examples(('/home/nihua/data/waymo/waymo_open_dataset_motion_v_1_2_0/uncompressed/tf_example/training', ['uncompressed_tf_example_training_training_tfexample.tfrecord-00000-of-01000']))
     print("abc")

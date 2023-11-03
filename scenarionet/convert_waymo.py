@@ -28,7 +28,8 @@ if __name__ == '__main__':
     parser.add_argument("--num_workers", type=int, default=8, help="number of workers to use")
     parser.add_argument(
         "--raw_data_path",
-        default=os.path.join(SCENARIONET_REPO_PATH, "waymo_origin"),
+        # default=os.path.join(SCENARIONET_REPO_PATH, "waymo_origin"),
+        default='/home/nihua/data/waymo/exp',
         help="The directory stores all waymo tfrecord"
     )
     parser.add_argument(
@@ -40,7 +41,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--num_files",
-        default=1000,
+        default=1,
         type=int,
         help="Control how many files to use. We will list all files in the raw data folder "
         "and select files[start_file_index: start_file_index+num_files]"
@@ -48,8 +49,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     overwrite = args.overwrite
+    overwrite = True
     dataset_name = args.dataset_name
+    # dataset_name = '/home/nihua/data/waymo/exp'
     output_path = args.database_path
+    output_path = '/home/nihua/data/waymo/convert'
     version = args.version
 
     save_path = output_path
