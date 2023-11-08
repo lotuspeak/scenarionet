@@ -535,12 +535,18 @@ def get_xy_range(scenario: scenario_pb2.Scenario):
 
     return (x_min, x_max, y_min, y_max, map_features)
 
-def plot_scenario(scenario, map_features, xy_limits):
+# lane
+lane_polyline_len_max = 0
+lane_polyline_len_min = float('inf')
+lane_polyline_len_count = 0
+lane_polyline_len_avg = 0
+
+def plot_scenario(scenario, map_features, dynamic_states, xy_limits):
+    global lane_polyline_len_count, lane_polyline_len_avg, lane_polyline_len_max, lane_polyline_len_min
     pth = '/home/nihua/data/waymo/visual/'
     pic_path = os.path.join(pth, f"{scenario.scenario_id}.png")
     
     plt.figure(figsize=(100,90))
-
     plt.xlim(xy_limits[0], xy_limits[1])
     plt.ylim(xy_limits[2], xy_limits[3])
     plt.axis("equal")
@@ -552,11 +558,18 @@ def plot_scenario(scenario, map_features, xy_limits):
     
     len_filter = 3
     
-    # lane
     for id, lane in map_features['lane'].items():
         # linestyle='dotted'
-        plt.plot(lane['polyline'][:,0], lane['polyline'][:,1], color = 'black')
+        color = 'black'
+        if id in dynamic_states.keys():
+            color = 'red'
+        plt.plot(lane['polyline'][:,0], lane['polyline'][:,1], color = color)
         polyline_len = lane['polyline'].shape[0]
+        lane_polyline_len_max = max(lane_polyline_len_max, polyline_len)
+        lane_polyline_len_min = min(lane_polyline_len_min, polyline_len)
+        lane_polyline_len_count += 1
+        lane_polyline_len_avg += (polyline_len - lane_polyline_len_avg) / lane_polyline_len_count
+        
         if polyline_len > len_filter:
             plt.plot(lane['polyline'][int(len_filter/2),0], lane['polyline'][int(len_filter/2),1], color = 'red', marker='$s$')
             plt.plot(lane['polyline'][-int(len_filter/2),0], lane['polyline'][-int(len_filter/2),1], color = 'red', marker='$e$')
@@ -591,6 +604,13 @@ def plot_scenario(scenario, map_features, xy_limits):
     # speed_bump
     for id, speed_bump in map_features['speed_bump'].items():
         plt.plot(speed_bump['polygon'][:,0], speed_bump['polygon'][:,1], color = 'red')
+        
+    # dynamic_states
+    for lane in dynamic_states.keys():
+        stop_point = dynamic_states[lane]['stop_point']
+        plt.plot(stop_point[0], stop_point[1], color = 'blue', marker = '+')
+        plt.text(stop_point[0] + 0.5, stop_point[1], color = 'blue', s = 'SP'+lane)
+    
     
     plt.grid()
     # plt.title()
@@ -621,12 +641,16 @@ def read_from_files(arg):
             scenario = scenario_pb2.Scenario()
             scenario.ParseFromString(data)
             print(scenario.scenario_id)
-            # if scenario.scenario_id != 'f1f6068fabe77dc8':
-                # continue
+            if scenario.scenario_id != 'f1f6068fabe77dc8':
+                continue
             x_min, x_max, y_min, y_max, map_features = get_xy_range(scenario)
             # print(x_min, x_max, y_min, y_max)
+            track_length = len(list(scenario.timestamps_seconds))
+            dynamic_states = extract_dynamic_map_states(scenario.dynamic_map_states, track_length)
             
-            plot_scenario(scenario, map_features, (x_min, x_max, y_min, y_max))
+            plot_scenario(scenario, map_features, dynamic_states, (x_min, x_max, y_min, y_max))
+            
+
             
             
             # for target_id in map_features['lane'].keys():
@@ -704,3 +728,4 @@ if __name__ == '__main__':
     read_from_files(('/home/nihua/data/waymo/exp/', ['uncompressed_scenario_training_20s_training_20s.tfrecord-00000-of-01000']))
     # read_from_files_examples(('/home/nihua/data/waymo/waymo_open_dataset_motion_v_1_2_0/uncompressed/tf_example/training', ['uncompressed_tf_example_training_training_tfexample.tfrecord-00000-of-01000']))
     print("abc")
+    print("lane polyline len, max: ", lane_polyline_len_max, "min: ", lane_polyline_len_min, "avg: ", lane_polyline_len_avg, "count:", lane_polyline_len_count)
